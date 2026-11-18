@@ -72,7 +72,7 @@ services:
     image: repopilot-sandbox:local
     build:
       context: .
-      dockerfile: Dockerfile.sandbox
+      dockerfile: docker/sandbox/Dockerfile
     command: ["python", "-c", "print('sandbox image ready')"]
 
   api:

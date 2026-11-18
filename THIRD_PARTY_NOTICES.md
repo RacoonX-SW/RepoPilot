@@ -5,7 +5,7 @@ evaluation fixtures retain their own licenses; the root license does not replace
 
 | Material | Origin and identity | Retained notices |
 | --- | --- | --- |
-| Real-defect identities and revision mappings | BugsInPy, commit `11c5f1eea954a42132cfd06bf257766a7963e0fd` | [Corpus provenance](docs/real-task-corpus.md#provenance-and-license), [pilot provenance](evals/real/provenance/pilot-v1.json) |
+| Real-defect identities and revision mappings | BugsInPy, commit `11c5f1eea954a42132cfd06bf257766a7963e0fd` | [Corpus provenance](docs/evaluation/real-task-corpus.md#provenance-and-license), [pilot provenance](evals/real/provenance/pilot-v1.json) |
 | The Fuck test overlays | Revisions pinned per task in the manifest; source and tests licensed MIT | [MIT notice](evals/real/licenses/thefuck.txt) |
 | tqdm test overlay | tqdm-003 selected upstream revisions; MIT/MPL-2.0 notices | [Upstream notice](evals/real/licenses/tqdm-003.txt) |
 | Cookiecutter test overlays | cookiecutter-003/004 selected upstream revisions; BSD-3-Clause | [003 notice](evals/real/licenses/cookiecutter-003.txt), [004 notice](evals/real/licenses/cookiecutter-004.txt) |

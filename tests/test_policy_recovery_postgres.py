@@ -21,7 +21,7 @@ API_URL = os.getenv("REPOPILOT_CH02B_API_URL", "")
 LEGACY_SOURCE = os.getenv("REPOPILOT_CH02B_LEGACY_SOURCE", "")
 pytestmark = pytest.mark.skipif(
     not POSTGRES_URL,
-    reason="run scripts/ch02b_integration.sh for the isolated CH-02B service probe",
+    reason="run scripts/development/ch02b_integration.sh for the isolated CH-02B service probe",
 )
 
 

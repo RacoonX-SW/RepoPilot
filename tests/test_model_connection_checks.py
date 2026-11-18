@@ -13,7 +13,8 @@ from repopilot.models import CodeChangeOutput, PlanOutput, ReviewOutput
 async def test_connection_checks_persist_reservations_and_never_reset_on_resume(
     tmp_path, monkeypatch, max_calls,
 ):
-    script = runpy.run_path(str(Path(__file__).parents[1] / "scripts/check_model_connections.py"))
+    script_path = Path(__file__).parents[1] / "scripts/tools/check_model_connections.py"
+    script = runpy.run_path(str(script_path))
     run_checks = script["run_checks"]
     store = PrivateStore(tmp_path / "private")
     transports = []

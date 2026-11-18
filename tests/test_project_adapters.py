@@ -69,7 +69,7 @@ def current_synthetic_runtime(destination: Path, image_id: str, python_version: 
     assert set(raw["projects"]) == {"tinyledger"}
     assert all(task["corpus"]["kind"] == "synthetic" for task in raw["tasks"])
     shutil.copytree(SYNTHETIC.parent, destination)
-    recipe = (ROOT / "Dockerfile.sandbox").read_bytes()
+    recipe = (ROOT / "docker/sandbox/Dockerfile").read_bytes()
     recipe_path = destination / "environments/ch18-sandbox.Dockerfile"
     recipe_path.write_bytes(recipe)
     lock_sha = hashlib.sha256((ROOT / "uv.lock").read_bytes()).hexdigest()

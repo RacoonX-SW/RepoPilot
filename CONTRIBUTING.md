@@ -4,6 +4,12 @@ Read [AGENTS.md](AGENTS.md) and the current card in [Openspec.md](Openspec.md). 
 `codex/` feature branch and PR per verifiable goal. Mark implementation, verification and merge
 separately; preserve local work and historical evaluation identities.
 
+Use the [repository layout](docs/project/repository-layout.md) and [documentation index](docs/README.md)
+when adding files. Service checks, experiments and helper scripts have separate directories;
+auxiliary Docker assets live under `docker/`. Keep paths in Make, Docker, Compose, CI and tests
+consistent with the maintained location. Frozen corpus files and historical JSON evidence retain
+their original bytes and identities.
+
 For Docker-based checks:
 
 ```sh
@@ -11,7 +17,7 @@ make check   # locked install, lint, fast tests, deterministic Mock benchmark
 make verify  # isolated full services, faults, smoke and Worker approval restart
 ```
 
-See [reproducible delivery](docs/reproducible-delivery.md) for local virtual environments,
+See [reproducible delivery](docs/guides/reproducible-delivery.md) for local virtual environments,
 environment checks and CI triggers. Tests use Mock without external model credentials. Add
 boundary tests for routing, tools or API changes; service faults require actual dedicated
 services rather than a unit-test substitute. A skipped probe is not a passed acceptance test.
