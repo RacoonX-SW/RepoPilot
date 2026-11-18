@@ -6,3 +6,6 @@
 - Side-effecting GitHub actions require both a LangGraph human interrupt and explicit runtime enablement.
 - Tests must run without external model or network access by using the mock model and demo repository.
 - Add or update tests whenever graph routing, tool boundaries, or API contracts change.
+- Keep service checks in `scripts/development/`, evaluation scripts in `scripts/experiments/`, and shared helpers in `scripts/tools/`.
+- Keep auxiliary Docker assets under `docker/`; preserve root Make and main Compose entry points when reorganizing files.
+- Update `docs/README.md` and relative links when moving documentation. Preserve frozen evaluation assets and historical JSON evidence byte-for-byte.

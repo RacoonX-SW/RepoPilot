@@ -75,3 +75,7 @@ extend-exclude = ["evals/real/overlays"] # Pinned upstream fixtures; hashes must
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "ASYNC", "S"]
 ignore = ["S101"]
+
+[tool.ruff.lint.isort]
+# Deployment files in docker/ do not make the Docker SDK a first-party module.
+known-third-party = ["docker"]

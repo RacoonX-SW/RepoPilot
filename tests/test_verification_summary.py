@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 def test_failed_run_cannot_export_a_successful_delivery_summary(tmp_path):
-    path = Path(__file__).resolve().parents[1] / "scripts/verification_summary.py"
+    path = Path(__file__).resolve().parents[1] / "scripts/tools/verification_summary.py"
     spec = importlib.util.spec_from_file_location("verification_summary", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

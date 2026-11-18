@@ -1,330 +1,175 @@
 # RepoPilot
 
-RepoPilot is a recoverable, human-governed multi-agent software-delivery system. It accepts a
-GitHub issue, researches the repository, proposes a bounded code change, runs tests in an
-isolated container, asks a separate reviewer for verification, and checkpoints before any
-side-effecting GitHub action.
+**面向 Python 仓库的、可恢复且受人工审批约束的代码修复 Agent 系统。**
 
-This is an independent learning and portfolio project inspired by the architectural ideas in
-[LangChain Open-SWE](https://github.com/langchain-ai/open-swe). It is intentionally smaller and
-self-hosted: the orchestration, persistence, queue, security boundaries, evaluation harness,
-and API in this repository were implemented specifically for RepoPilot.
+接收 Issue，检索仓库代码，生成候选修改，在隔离环境运行测试，再经过模型审查与人工审批。
+项目重点是修改权限、候选与测试证据一致性、调用预算和审批点恢复。
 
-See [Openspec.md](Openspec.md) for the current behavioral contracts, verified evidence,
-known limitations, and acceptance criteria for the next iterations (Chinese).
+这是独立学习与作品集项目，架构思路参考 [LangChain Open-SWE](https://github.com/langchain-ai/open-swe)。
+当前面向可信单用户环境。真实模型修复质量、程序控制能力和 Mock 流程验证分别记录。
 
-**Start with `make demo`** for a credential-free Docker walkthrough: an intentionally scripted first
-proposal fails a real test, the second passes, and bound approval resumes the same-process checkpoint.
-See [演示与真实任务路径](docs/demo.md), [能力与证据索引](docs/evidence-index.md),
-[设计与失败案例](docs/design-decisions.md), and [可复现安装](docs/reproducible-delivery.md).
-Actual Worker process restart is verified separately by `make verify`.
+[快速开始](#快速开始) · [核心能力](#核心能力) · [系统架构](#系统架构) · [验证与评测](#验证与评测) · [项目结构](#项目结构) · [文档导航](#文档导航)
 
-The latest three-strategy pilot found **0/6 independent repairs in each arm**. It adds evaluation
-evidence, not a quality-lift claim; [results](docs/real-evaluation-results-2026-10-23.md) and
-[offline failure observations](docs/failure-analysis-2026-10-23.md) retain that negative result.
+## 快速开始
 
-## What it demonstrates
+需要 Docker Engine / Desktop、Compose v2、Make 和 Git。完整服务验证还需要宿主 Python 3，
+用于少量辅助脚本；项目 SDK 和测试依赖运行在容器内。
 
-- Explicit LangGraph state machine: three model roles (Planner, Coder, Reviewer), plus deterministic
-  read-only Researcher and Test Analyst nodes.
-- [Budgeted routing](docs/task-routing.md): explicit `oneshot / workflow / auto`,
-  deterministic visible-input rules, one bounded upgrade on the same call ledger,
-  and persisted route explanations. Omitted strategy retains workflow; one-shot
-  explicitly omits model review and still requires Docker test evidence and human approval.
-- Parallel research/test-analysis fan-out, deterministic-failure retries and reviewer rework within
-  the total Coder iteration budget, with low-risk concerns escalated to human approval.
-- Single graph writer with a versioned read/write/create policy, full-batch edit preflight,
-  read-only tests/build configuration, stale-context rejection, and one bounded Coder correction;
-  policy-rejected batches never partially touch the tree.
-- Explainable BM25 + Python AST symbol retrieval with source/test dependency expansion and a
-  bounded context budget.
-- Durable PostgreSQL checkpoints and `Command(resume=...)` human approval.
-- Frozen complete candidates, image/command-bound test evidence, versioned one-time approval
-  decisions and durable retryable resume intents.
-- Private staged proposals, complete artifact generations selected by database CAS, retained
-  orphan journals and exact-operation replay after a generation/checkpoint handoff interruption.
-- Versioned application-schema migrations, optimistic task-state updates, and explicit result/event
-  JSON versions.
-- Durable per-task model-call reservations, bounded provider retries/timeouts, conservative
-  unknown-result recovery, and separate attempt/outcome metrics.
-- Redis dispatch, idempotency lock, cancellation flag, and event fan-out.
-- FastAPI task API plus replayable event history and SSE progress.
-- Per-node latency, retry, sandbox, and wall-time metrics through a task metrics endpoint.
-- Network-disabled Docker test sandbox using a disposable per-task snapshot plus resource,
-  capability, command, and path controls.
-- Governed GitHub REST tool that can create a draft PR only after a non-empty diff, passing tests,
-  recorded review status, runtime opt-in, and human approval. One-shot skips model review explicitly.
-- Ten-scenario offline benchmark and mock model for deterministic CI regression testing.
-- Twenty pinned BugsInPy defects from The Fuck with a Docker reproduction validator,
-  resumable per-case real-model evaluation, one-shot baseline comparison, and sanitized
-  failure/latency reports; this is a one-project pilot, not a broad benchmark claim.
-- A separate [frozen corpus pilot](docs/real-task-corpus.md#frozen-cross-project-pilot-v1)
-  with 23 reproduced defects across three projects: the historical 20 are development,
-  and three new tqdm/Cookiecutter cases form the original project-disjoint holdout. The completed
-  three-strategy pilot repeats each case twice; observed cases are no longer unseen validation data.
-- Automated lint, test, and 70% line-coverage quality gates on every push and pull request.
-- OpenAI-compatible and Google Cloud SDK adapters, with an optional ChatGPT OAuth Reviewer.
+在仓库根目录执行：
 
-## Quick start
-
-Requirements: Docker Desktop/Engine, Compose v2, Make and Git. Full service verification also
-uses host Python 3 for small helper scripts; project SDKs run inside the containers.
-
-```bash
-make demo
-make check
-# Full isolated service/fault/restart verification:
-make verify
+```sh
+make demo     # 无密钥演示：实际测试失败 → 有界返工 → 测试通过 → 模拟审批恢复
+make check    # 锁安装、lint、快测试与 10 场景 Mock 回归
+make doctor   # 依赖、配置和内置资源检查，不连接模型
+make verify   # 独立 PostgreSQL / Redis / Docker 故障矩阵与实际 Worker 审批重启
 ```
 
-These commands do not read credentials into containers or replace your running application stack.
-See [locked dependencies, supported platforms and CI](docs/reproducible-delivery.md). To start a
-long-lived local application in a new clone:
+构建阶段需要下载缺少的依赖。演示和 Mock 验证不消耗模型额度。
+`make demo` 使用固定夹具和同进程内存 checkpoint，跨进程 Worker 恢复由 `make verify` 单独验证。
+详细说明见[演示手册](docs/guides/demo.md)和[安装与验证](docs/guides/reproducible-delivery.md)。
 
-```bash
+启动长期运行的本地服务：
+
+```sh
 cp -n .env.example .env
 docker compose up --build -d
-./scripts/smoke.sh
-./scripts/recovery_smoke.sh
 ```
 
-The template default `MODEL_PROVIDER=mock` requires no API key and repairs the bundled calculator fixture.
-Open <http://localhost:8000/docs> for the API.
+示例配置默认使用 Mock，API 文档位于 <http://localhost:8000/docs>。
+已有 `.env` 的 provider 选择由其配置决定。
+真实模型、Reviewer override 和私有授权配置见[模型接入](docs/guides/model-providers.md)。
+任务创建、绑定审批与确定性 smoke 操作见[任务 API 手册](docs/guides/task-api.md)。
 
-Compose runs the one-shot application migration before starting API and Worker. Existing deployments
-must stop old processes before upgrading and must not mix old/new Workers; see
-[database migrations and task state versions](docs/database-migrations.md) for the backup, upgrade,
-compatibility, and recovery procedure.
+## 核心能力
 
-The smoke scripts exercise the stack that is already running. If `.env` currently selects a real
-provider, recreate the API and worker with an explicit mock override before collecting deterministic
-smoke evidence:
+- **显式图编排**：LangGraph 编排 Planner、Coder、Reviewer 三种模型角色，Researcher 与
+  Test Analyst 为确定性只读节点；支持 `workflow / oneshot / auto` 和有界返工。
+- **集中修改边界**：程序校验精确路径、修改意图、内容摘要和整批权限；默认测试与构建配置只读。
+- **完整候选与审批绑定**：独立暂存、完整 artifact 校验、数据库 CAS 选择代次，
+  测试证据和一次性人工决定绑定同一候选。
+- **持久化调用治理**：各角色、策略纠正和 transport retry 共享任务账本；
+  请求前预留，失败及未知响应仍计数，重启不清零。
+- **隔离测试与恢复**：Docker 测试使用一次性候选副本和资源限制；PostgreSQL checkpoint
+  支持已经验证的审批点 Worker 重启续跑。
+- **受控发布**：显式启用后才允许创建 Draft PR；发布意图固定获批版本，响应丢失先对账，
+  基线移动阻断后续发布并要求重新测试与审批。
+- **可解释检索与独立验收**：BM25、Python AST 符号、路径匹配和一跳依赖扩展；
+  可见测试与 evaluator 独立验收分离。
 
-```bash
-MODEL_PROVIDER=mock MODEL_NAME=deterministic-mock-v1 REVIEW_MODEL_PROVIDER= \
-  OPENAI_API_KEY= OPENAI_BASE_URL= GITHUB_WRITE_ENABLED=false \
-  docker compose up --build -d --force-recreate api worker
+## 系统架构
+
+```mermaid
+flowchart LR
+    API[FastAPI] --> Queue[Redis 分发与通知]
+    Queue --> Worker[Worker / LangGraph]
+    Worker --> Roles[Planner / Coder / Reviewer]
+    Worker --> Policy[修改权限与完整候选]
+    Policy --> Sandbox[Docker 测试]
+    Sandbox --> Approval[绑定证据的人工审批]
+    Approval --> Publish[可选 Draft PR / 意图与对账]
+    Worker <--> SQL[(PostgreSQL 状态 / 调用账本 / checkpoint)]
 ```
 
-To use a real OpenAI-compatible model, edit `.env`:
+Redis 负责分发和实时通知，PostgreSQL 保存权威状态。主服务 Compose 在 API / Worker 启动前
+运行数据库迁移。更新已有部署时，应停止旧 Worker、备份 SQL 与 artifact，再执行前向迁移。
 
-```dotenv
-MODEL_PROVIDER=openai
-MODEL_NAME=gpt-4.1-mini
-OPENAI_API_KEY=your-local-secret
-# OPENAI_BASE_URL=https://your-compatible-endpoint/v1
-MODEL_MAX_CALLS=12
-MODEL_REQUEST_TIMEOUT_SECONDS=90
-MODEL_MAX_RATE_LIMIT_RETRIES=2
-MODEL_MAX_TRANSIENT_RETRIES=2
-MODEL_RETRY_BASE_SECONDS=1
-MODEL_MAX_RETRY_WAIT_SECONDS=30
-MODEL_MAX_TOTAL_BACKOFF_SECONDS=60
-MODEL_MAX_TOTAL_TOKENS=0
-MODEL_MAX_OUTPUT_TOKENS=4096
+图路由、事务边界和恢复范围见[架构说明](docs/architecture/overview.md)及
+[运行时契约](docs/architecture/runtime-correctness.md)。
+
+## 验证与评测
+
+| 证据 | 已记录结果 | 范围 |
+| --- | --- | --- |
+| 2026-10-24 完整服务 CI | 555 passed / 0 skipped，行覆盖率 87.07% | 历史 CH-19 源码身份；Mock 10/10、API smoke 与两种策略的 Worker 审批重启通过 |
+| 2026-09-09 单项目真实评测 | oneshot 15/20，workflow 13/20；请求 22 与 69 | The Fuck 的 20 个固定历史缺陷，未证明多角色提高修复率 |
+| 同批无模型检索诊断 | 预算内目标文件覆盖 20/20，Recall@3 95% | 默认 12 文件 / 70,000 字符，指标衡量文件检索 |
+| 冻结跨项目语料 | 23 例 / 3 项目，23/23 聚焦 buggy/fixed 复现 | The Fuck 20、tqdm 1、Cookiecutter 2 |
+| 2026-10-23 三策略对照 | 3 缺陷 × 3 策略 × 2 轮，每策略 0/6 | 18 执行单元，16 completed、2 failed；无质量或路由收益结论 |
+
+上述数字来自各自固定版本，不代表本次目录整理后的重新验收。
+最新维护记录见[目录整理说明](docs/project/repository-layout.md)，证据分母与来源见
+[能力证据索引](docs/evidence-index.md)和[评测总览](docs/evaluation/overview.md)。
+
+当前边界：
+
+- 审批点恢复已有实际 Worker 验证；队列 ACK、自动崩溃重领、续租和 Worker fencing 尚未实现。
+- 发布故障验证使用 HTTP 模拟远端；真实 GitHub 发布器端到端验收仍未完成。
+- Docker socket 是受信任的管理边界；容器隔离仍共享宿主内核。
+- provider usage 不完整时保留未知值，调用次数上限不能解释为精确金额上限。
+- 当前没有多租户权限、GitHub App / Webhook 或审批管理前端。
+
+## 项目结构
+
+```text
+.
+├── src/repopilot/          # 应用、图编排、存储、模型和评测运行代码
+│   ├── graph/             # 显式节点、状态和路由
+│   └── migrations/        # Alembic 应用表迁移
+├── tests/                 # 单元、边界、服务故障及兼容性回归
+├── scripts/
+│   ├── development/       # 服务验证、迁移检查、smoke 和 Worker 恢复
+│   ├── experiments/       # 真实评测、检索诊断和冻结语料检查
+│   └── tools/             # 审批载荷、模型连接检查和验证汇总
+├── docker/
+│   ├── sandbox/           # 测试 sandbox 镜像
+│   ├── evaluation/        # 真实缺陷环境和评测工具镜像
+│   └── verification/      # 专项 Compose 与可选依赖缓存 Dockerfile
+├── docs/
+│   ├── architecture/      # 当前架构与行为契约
+│   ├── guides/            # 安装、演示和模型接入
+│   ├── evaluation/        # 评测协议、历史结果和失败观察
+│   ├── verification/      # 按日期保留的专项验收记录
+│   ├── project/           # 交付状态、设计取舍和版本材料
+│   ├── archive/           # 旧计划、中断记录和阶段交接
+│   └── evidence/          # 保持原字节的公开机器证据
+├── evals/                 # 评测夹具、冻结语料、协议与来源
+├── examples/              # 自有演示与确定性基准夹具
+├── delivery/              # 基础镜像身份
+├── requirements/          # 安装工具及其锁定要求
+├── Dockerfile             # 主服务和 integration-test 构建入口
+├── docker-compose.yml     # 主服务入口
+├── docker-compose.chatgpt.yml
+├── Makefile               # 稳定的开发与验证命令
+├── pyproject.toml
+├── uv.lock
+└── Openspec.md            # 现有单文件规范与路线图
 ```
 
-Never commit `.env`. The file is ignored by Git.
+目录职责与迁移对照见[整理记录](docs/project/repository-layout.md)。
+`reports/`、`workspaces/` 和私有授权数据在本地保存，按现有忽略规则管理。
 
-For a local ChatGPT subscription authorization check, install `.[oauth]` and run
-`python -m repopilot.chatgpt_auth login`. The separate operator CLI verifies browser
-authorization and can list account models without sending inference requests. Credentials
-stay in the ignored, private `.local/chatgpt/` directory. The CLI also supports `refresh`.
-For Gemini Planner/Coder with a ChatGPT Reviewer, see [provider configuration](docs/model-providers.md).
-Each role records its actual provider and shares the task's durable budget. Mock mode stays offline.
+## 开发与验证入口
 
-Every online Planner, Coder, policy-correction, Reviewer, and controlled transport retry consumes
-the same durable task budget. `MODEL_MAX_TOTAL_TOKENS=0` disables the optional trusted-token gate;
-call caps still apply. Google/OpenAI-compatible adapters send output-token caps; ChatGPT plan usage
-does not support that field and uses a local stream-byte limit and request timeout, which do not cap
-server-side generation or billing. Provider usage is never estimated, so missing usage or special
-billing prevents an exact monetary guarantee. See
-[model-call budgets and provider failures](docs/model-call-control.md) for error states, recovery,
-fallback identity, and deployment rules.
+| 命令 | 用途 |
+| --- | --- |
+| `make check` | lint、快测试和 Mock 回归；需要服务的用例会明确 skip |
+| `make verify` | 独立服务故障矩阵、完整测试、来源核对和清理 |
+| `make migration-test` / `make ch10-migration-test` | 专用数据库迁移与预算账本检查 |
+| `make smoke` / `make smoke-recovery` | 检查调用者已配置的运行实例及审批恢复 |
+| `make eval` | 10 个确定性 Mock 场景 |
+| `make eval-real-reproduce` | 按固定镜像复现历史语料，需要提前准备缓存 |
+| `make eval-real-retrieval` | 无模型的 issue-only 检索诊断 |
+| `make eval-real` | 按协议运行真实模型，需要适用预算和私有配置 |
 
-The worker launches short-lived test containers through the mounted Docker socket. Docker Desktop
-uses the default `DOCKER_SOCKET_GID=0`; on Linux, set it in `.env` to the value returned by
-`stat -c '%g' /var/run/docker.sock`.
+完整服务验证中的 skip 不计为通过；真实调用和发布授权分别按协议执行。
+本地 Python 环境、镜像准备和 CI 触发条件见[安装手册](docs/guides/reproducible-delivery.md)。
 
-## Human approval flow
+## 文档导航
 
-Create a task:
+| 想了解什么 | 阅读入口 |
+| --- | --- |
+| 从哪里开始 | [文档首页](docs/README.md) |
+| 运行演示和真实任务 | [演示手册](docs/guides/demo.md) |
+| 系统设计与一致性边界 | [架构](docs/architecture/overview.md) · [候选代次](docs/architecture/candidate-generations.md) · [人工审批](docs/architecture/candidate-approvals.md) |
+| 模型接入与调用预算 | [模型配置](docs/guides/model-providers.md) · [调用控制](docs/architecture/model-call-control.md) |
+| 实验如何验证、已有结果如何解释 | [评测总览](docs/evaluation/overview.md) · [三策略结果](docs/evaluation/real-evaluation-results-2026-10-23.md) |
+| 已有交付与验证来源 | [交付状态](docs/project/delivery-status-2026-10-24.md) · [证据索引](docs/evidence-index.md) |
+| 后续开发与参与规则 | [项目规范](Openspec.md) · [贡献指南](CONTRIBUTING.md) · [仓库约定](AGENTS.md) |
+| 脚本和镜像位置 | [脚本导航](scripts/README.md) · [Docker 导航](docker/README.md) |
 
-```bash
-curl -X POST http://localhost:8000/api/v1/tasks \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "repository_url": "https://github.com/owner/repository",
-    "issue_title": "Fix the failing parser edge case",
-    "issue_body": "Describe expected behavior and acceptance criteria.",
-    "base_branch": "main",
-    "test_command": "python -m pytest -q"
-  }'
-```
-
-When the task reaches `awaiting_approval`, inspect `GET /api/v1/tasks/TASK_ID/approval` for the
-frozen candidate, complete manifest, test evidence and Reviewer risk. Fetch the full Diff from
-`/api/v1/tasks/TASK_ID/candidates/CANDIDATE_ID/diff`. Then resume the durable thread using the exact
-bindings from that view (the helper builds the required `approval-v2` body):
-
-```bash
-curl -fsS http://localhost:8000/api/v1/tasks/TASK_ID/approval \
-  | python3 scripts/approval_payload.py 'Reviewed full diff and test evidence' \
-  | curl -fsS -X POST http://localhost:8000/api/v1/tasks/TASK_ID/approval \
-      -H 'Content-Type: application/json' --data-binary @-
-```
-
-Legacy boolean-only requests return 422. A committed decision whose Redis delivery fails returns
-202 with `saved=true`, `dispatch_state=pending` and a decision ID. Explicitly retry that ID at
-`POST /api/v1/tasks/TASK_ID/approval/dispatch`; do not create another approval. Old unbound
-checkpoints require a new task and fresh tests. See [candidate and approval contracts](docs/candidate-approvals.md).
-Publication uses a durable intent bound to the approved artifact, evidence, decision and base SHA.
-It creates deterministic Git objects and a unique branch, and reconciles uncertain responses before
-continuing. Ambiguous PR creation never triggers a second blind create. Base movement requires
-retesting and approval; cancellation preserves observed remote effects. Receipts remain available at
-`GET /api/v1/tasks/{task_id}/publication`. See [publication/recovery](docs/publication.md).
-Automatic outbox delivery and Worker fencing remain later change cards.
-
-GitHub writes are off by default. To enable draft-PR creation, set all of the following locally:
-
-```dotenv
-GITHUB_WRITE_ENABLED=true
-GITHUB_TOKEN=your-fine-grained-token
-GITHUB_ALLOWED_OWNERS=your-account-or-organization
-```
-
-The token should be fine-grained and limited to the intended repositories. RepoPilot never needs
-permission to merge a pull request.
-
-Use a feature branch and pull request for repository changes. The included PR template requires
-test, evaluation, recovery, security, and resume-claim evidence before review.
-
-## Evaluation
-
-Run the deterministic ten-scenario workflow regression suite without an LLM key:
-
-```bash
-make eval
-```
-
-The report includes completion, test pass, exact change scope, HITL, iteration, category, and
-latency evidence, plus retrieval Recall@3, Recall@5, and mean reciprocal rank. CI stores the JSON
-report as a workflow artifact and fails if any deterministic case regresses. This mock result
-measures workflow and retrieval reliability, not LLM coding ability.
-
-Run `make ch02b-integration` for the isolated PostgreSQL/Redis/Docker policy-correction probe,
-explicit legacy-checkpoint refusal, API smoke and actual Worker restart. It uses a dedicated
-Compose project, fixed Mock configuration and automatic project-scoped cleanup. See the
-[CH-02B verification record](docs/ch02b-verification-2026-10-19.md) for results and recovery limits.
-
-Run `make ch03a-integration` to additionally verify bound approvals, previous-head migration,
-opposite-decision concurrency, commit/process-exit recovery, real Redis connection failure and
-artifact corruption refusal. It also reruns policy probes, mock evaluation and restart smoke.
-
-Run `make ch05a-integration` for staged multi-file failure, retained orphan reconciliation,
-generation CAS/replay, and a pinned CH-03A approval upgrade, plus the same full regression and
-smoke checks. The dedicated test Compose file pins the previously verified Python base digest;
-`CH05A_PYTHON_IMAGE` can select another base explicitly. Source and tests are rebuilt and hashed.
-See [generation storage and recovery](docs/candidate-generations.md) for compatibility and limits.
-The [2026-10-21 verification record](docs/ch05a-verification-2026-10-21.md) documents the full
-229-test service run, source checks, faults and cleanup, including intermediate failures.
-
-After configuring an OpenAI-compatible model in the ignored `.env`, run `make eval-real` for a
-separately labelled model-quality report. See [docs/evaluation.md](docs/evaluation.md) for the
-evidence contract and rules for defensible resume metrics.
-
-The first complete 20-case paired run is documented in
-[docs/real-evaluation-results-2026-09-09.md](docs/real-evaluation-results-2026-09-09.md). It records
-the negative result as well as the successes: the current multi-agent path did not beat the
-one-shot baseline, so no quality-lift claim is made.
-
-The later [2026-10-23 three-strategy pilot](docs/real-evaluation-results-2026-10-23.md) contains
-three defects across two held-out projects, two repeats per strategy, and zero accepted repairs.
-Its 18 units are not 18 independent defects. [Failure observations](docs/failure-analysis-2026-10-23.md)
-separate call-control exits, collection errors and candidate outcomes; the two experiments stay separate.
-
-To validate the real corpus without spending model quota, run `make eval-real-reproduce` first.
-The real-model protocol uses the same pinned manifest and Docker image identity, resumes completed
-case/mode pairs, and keeps quota-pending pairs separate from ordinary failures; see
-[docs/real-evaluation-protocol.md](docs/real-evaluation-protocol.md).
-
-CH-07A adds [trusted project adapters](docs/project-adapters.md): schema-2 manifests bind
-source/read-only/test paths, immutable runtime images and verified evaluator recipes/overlays.
-Source caches are mapped per project; old manifests and experiment directories remain read-only.
-The original corpus contains 20 The Fuck cases. CH-07A used a second, synthetic Docker
-fixture for adapter correctness; that fixture adds no model-quality claim.
-The [CH-07A verification](docs/ch07a-verification-2026-10-22.md) records 392 Linux tests
-with zero skips and 87.20% coverage, original-corpus compatibility/reproduction 20/20,
-two synthetic Docker evaluation paths, Mock 10/10 and approval restart recovery.
-
-CH-07B subsequently froze [python-pilot-v1](docs/real-task-corpus.md): the historical
-20 development defects plus three held-out defects from tqdm and Cookiecutter,
-with 23/23 buggy/fixed focused reproductions. CH-07C adds
-[independent repeats and descriptive paired reports](docs/repeated-evaluations.md).
-The [CH-01B Docker acceptance](docs/ch01b-verification-2026-10-23.md) records 538 tests,
-Mock 10/10, smoke and both strategy approval-restart paths. These engineering and
-corpus checks do not establish a repair-quality improvement.
-
-The [2026-10-23 corrected three-strategy pilot](docs/real-evaluation-results-2026-10-23.md)
-finished 18 units on three held-out defects from two projects: one-shot, workflow
-and auto each observed 0/6 independently accepted repairs. They used 14, 27 and 30
-API attempts respectively; two auto units failed at the call layer. This is a small
-negative result, with no quality-lift claim. Original and corrected attempts total
-101/108; quota resumes preserved records, and a completed resume sent zero requests.
-
-Run `make eval-real-retrieval` to measure issue-only target-file ranking on the same commits without
-calling a model. Its local JSON report is separate from both repair quality and the mock workflow
-regression.
-
-## Development
-
-```bash
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install ".[dev]"
-pytest --cov=repopilot --cov-report=term-missing --cov-fail-under=70 -q
-ruff check .
-make migration-test
-make ch10-migration-test
-```
-
-See [docs/architecture.md](docs/architecture.md) for trust boundaries, recovery semantics, and
-observability, and [docs/retrieval.md](docs/retrieval.md) for the retrieval scoring and evidence
-contract. The [database migration guide](docs/database-migrations.md) defines
-application/checkpoint ownership, state transitions, upgrade order, and forward recovery. With the
-Compose stack running, `make smoke-recovery` demonstrates worker restart and checkpoint resume at
-the human-approval boundary while verifying that the persisted model-call total does not reset.
-The [model-call control guide](docs/model-call-control.md) defines the provider request, ledger,
-retry, and crash-window contract.
-
-## Current scope
-
-CH-06A adds [confirmed cancellation and persisted task deadlines](docs/execution-control.md).
-Running cancellation returns 202/cancelling until owned resource cleanup is confirmed. New tasks
-default to 900 seconds of execution; queue and approval time are separately recorded and excluded
-unless configured. The [2026-10-22 verification](docs/ch06a-verification-2026-10-22.md) records
-314 container tests with zero skips, 84.19% coverage, Mock 10/10 and Worker restart recovery.
-Run `make ch06a-integration` for the isolated fault/restart suite.
-
-
-CH-03B's [2026-10-22 verification record](docs/ch03b-verification-2026-10-22.md) covers 281
-container tests, publication transport faults, process exits, Mock regression and Worker restart.
-Run `make ch03b-integration` for the isolated suite. GitHub itself is simulated; publication uses
-the [approved-intent protocol](docs/publication.md), with no automatic merge or Worker fencing.
-
-Version 0.1 focuses on one reliable path: issue to verified change to human approval to optional
-draft PR. Slack/Linear triggers, MCP packaging, a web dashboard, multi-language sandbox images,
-and broad real-repository benchmarks are deliberately left for later iterations rather than
-claimed as done.
+`Openspec.md` 继续作为既有单文件规范；本次目录整理没有初始化 OpenSpec CLI，
+也没有将路线图中的待实现项转换为已交付规格。
 
 ## License
 
-MIT
-
-CH-06C defines [public diagnostics and private execution data](docs/data-boundaries.md):
-allowlisted API/events, classified failures, guarded model/checkpoint input and private
-byte-exact Diff access requiring an API Key. Run `make ch06c-integration` for isolated verification.
-
-The [2026-10-22 CH-06C verification](docs/ch06c-verification-2026-10-22.md) records
-352 container tests with zero skips, 85.42% coverage, all 40 service probes, Mock 10/10
-and actual Worker restart recovery.
+MIT。第三方语料、许可及来源见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

@@ -1,0 +1,170 @@
+# Architecture
+
+The workflow diagram below describes the default strategy. CH-01B also supports
+one-shot with one Coder generation, a deterministic test gate, and explicit
+`review_performed=false` before bound human approval. Auto selects a route from
+visible first-retrieval features and can upgrade once on the same model ledger.
+All strategies retain candidate/evidence binding and publication opt-in; see
+[task routing](task-routing.md).
+
+RepoPilot deliberately separates agentic decisions from deterministic controls.
+
+```mermaid
+flowchart LR
+  API[FastAPI] --> Q[Redis queue]
+  Q --> W[Worker]
+  W --> MC[Controlled model-call boundary]
+  MC --> L[(Call budget and attempt ledger)]
+  MC --> MP[Model provider]
+  W --> G[LangGraph]
+  G --> P[Planner]
+  P --> R[Researcher: BM25 + AST symbols]
+  P --> T[Test analyst]
+  R --> C[Coder]
+  T --> C
+  C --> AP[Apply policy: single writer]
+  AP -->|valid batch| A[Freeze complete candidate]
+  A --> S[Docker tests on frozen artifact]
+  AP -->|one task-wide correction| C
+  S --> V[Reviewer]
+  V -->|medium/high risk within iteration budget| C
+  V -->|passing test gate: escalate per policy| H[HITL interrupt]
+  H -->|approved| PI[(Bound publication intent and receipt)]
+  PI --> GH[GitHub object/ref/PR reconciliation]
+  G --> CP[(PostgreSQL checkpoints)]
+  H --> D[(Bound decision and resume intent)]
+  W --> E[(Task and event tables)]
+  M[Versioned app migration] --> E
+  M --> L
+  E --> API
+```
+
+## Trust boundaries
+
+1. Repository URLs are limited to public GitHub HTTPS URLs plus one bundled demo URI.
+2. A service-owned, versioned capability policy separates readable files from writable existing
+   files and trusted creation scopes. The default keeps tests and build/CI configuration read-only,
+   excludes credential-like files from context, and denies creation, deletion, and rename. Paths
+   use one normalized identity for matching, deduplication, context lookup, and access; traversal,
+   `.git`, case aliases, symbolic links, hard links, and special files are rejected. See
+   [workspace capability policy](workspace-capabilities.md).
+3. Test commands are parsed to argument arrays; shell operators and arbitrary executables are rejected.
+4. Tests execute from a disposable materialization of a content-addressed candidate, without inheriting the
+   worker's mounts, network access, Linux capabilities, or privilege escalation. Symlinks and
+   special files are rejected when the snapshot is built.
+5. GitHub writes require a non-empty diff, passing tests, an allowlisted owner, runtime enablement,
+   a token, recorded review status, and a LangGraph human approval interrupt. One-shot explicitly skips
+   model review. Deterministic checks override an
+   incorrect model approval and feed their evidence into the bounded retry loop.
+6. Tokens and credential-bearing URLs are never placed in graph state or task events.
+
+The worker's Docker-socket mount is an administrative trust boundary: access to that socket is
+effectively host-level Docker control. Run RepoPilot only on a trusted host; production deployments
+should replace it with a remote, least-privilege sandbox service.
+
+## Persistence and recovery
+
+Every graph node is checkpointed by `AsyncPostgresSaver`. The stable `graph_thread_id` stored on
+the task record is the recovery cursor. Approval resumes the same thread with
+`Command(resume=...)`; it does not rebuild the workflow from scratch.
+
+`prepare` freezes generation 0; `apply_policy` writes a private stage, verifies all bytes/modes
+and selects the complete artifact through database CAS. It leaves the original checkout intact.
+Tests, Reviewer context
+and the versioned human decision refer to that candidate and evidence digest. Decision, task CAS,
+audit event and pending resume intent commit together. Redis delivery failures remain visible and
+can be explicitly retried; Worker resolves the decision from SQL rather than message booleans.
+Unbound legacy approvals require a new task/retest. See [candidate and approval contracts](candidate-approvals.md).
+Worker startup and task entry classify retained stages without adopting/deleting them. Exact
+operation replay handles the generation/checkpoint commit gap; superseded operations and stale
+evidence/approval/results are rejected. See [candidate generations](candidate-generations.md).
+Publication reads the bound artifact and uses the approved base SHA as the commit parent. A durable
+intent fixes the full task/decision/candidate/target identity and Git object IDs. Each HTTP phase is
+saved before transport and reconciled against the same target. Conflicts, base movement and unknown
+PR outcomes stop further writes; cancellation records effects rather than deleting them. See
+[publication contracts](publication.md). Automatic queue recovery and ownership fencing remain CH-04.
+
+When deterministic validation fails, or when the reviewer reports a concrete medium/high-risk
+finding, the coder refreshes repository context from the bound complete generation before
+applying feedback. A low-risk reviewer concern goes directly to HITL. Reviewer rework shares the
+total Coder iteration budget: the default two iterations allow one rework; a configured higher
+maximum can allow more. An independent one-rework cap remains CH-13. Previous edits remain
+accumulated in state, and the configured maximum iteration count prevents an unbounded agent loop.
+
+Coder checkpoints a `CodeChangeOutput-v2` proposal before the separate `apply_policy` writer
+node checks the exact-path/action/content-digest intent and calls `apply_edits()`. A denied whole
+batch yields `policy-feedback-v1` with a stable reason and only context-approved paths. Its one
+task-wide correction is checkpointed before another Coder request; refreshing context cannot reuse
+an earlier content digest. This count is independent of Coder iterations and CH-10 transport
+attempts, while every new model request still consumes the same durable call ledger. See
+[structured Coder correction](workspace-capabilities.md#structured-coder-correction).
+
+Redis is intentionally not the source of truth. It owns dispatch, short-lived locks,
+cancellation flags, and live event fan-out. PostgreSQL owns task history, events, the model-call
+ledger, candidate/evidence/approval records, and graph state. RepoPilot's Alembic revisions own these application
+tables; LangGraph checkpoint tables stay behind `AsyncPostgresSaver.setup()` and are never modified
+by guessed application migrations. The application migration service must complete before API or
+Worker starts. Existing
+deployments stop old writers first because pre-CH-09 Workers do not participate in state-version
+compare-and-set. See [database migrations and task state versions](database-migrations.md).
+
+Task records carry a monotonically increasing `state_version`. Each accepted status/result update
+matches the caller's expected status and version and advances the version atomically; stale updates
+are rejected. Result and event JSON carry explicit schema versions, with migrated legacy rows
+reported as version `0` and current writes as version `1`. This guards the application row, but it
+does not make Redis delivery, checkpoints, workspace changes, events, or remote side effects one
+transaction.
+
+Before every provider transport attempt, the Worker commits a task-wide budget reservation and
+then records `STARTED`. Planner, Coder, policy corrections, Reviewer calls, and controlled retries
+share this total. Completed attempts become `SUCCEEDED` or `FAILED`; an attempt that may have sent
+bytes but lacks a persisted outcome becomes `UNKNOWN` on recovery and is never refunded. A
+reservation left before `STARTED` also remains consumed. This conservatism closes the free-retry
+window but cannot make the database and provider one transaction. See
+[model-call budgets and provider failures](model-call-control.md).
+
+`scripts/development/recovery_smoke.sh` exercises this contract at the human-approval checkpoint: it creates a
+task, waits for the persisted interrupt, restarts the worker, submits the decision, and verifies
+that the same task completes without repeating the test runner or resetting its model-call total.
+
+## Repository retrieval
+
+The researcher uses a deterministic hybrid retriever before any code-generation call. It combines
+BM25 lexical relevance, path matches, Python AST symbols, and one-hop source/test dependencies.
+Every selected file has component scores and match evidence in graph state and task results. A
+hard character budget limits model context; selected file contents are included whole rather than
+silently truncated, so the coder is not asked to rewrite a file from a partial body.
+
+This is an offline, explainable retrieval baseline. It does not claim embedding search, semantic
+reranking, or large-repository quality. See `docs/architecture/retrieval.md` for the evaluation contract.
+
+## Observability
+
+Each node records its name, iteration, and duration in graph state. The task result persists these
+records, while `GET /api/v1/tasks/{task_id}/metrics` aggregates wall time, node time, node run
+counts, per-node duration, iteration count, sandbox time, and separate model-call reserved,
+started, succeeded, failed, unknown, pending, retry, fallback, backoff, and trusted-usage fields.
+Node-update events carry the
+corresponding duration so the API, SSE stream, and post-run metrics describe the same execution.
+
+## Execution stop and deadline scope
+
+[CH-06A](execution-control.md) binds one execution control scope to graph nodes and their I/O.
+SQL stores cancellation requests, phase timing, exact owned resource IDs and cleanup evidence.
+Only cleanup completion permits a stopped timestamp. Queue/approval expiry runs independently
+of active execution; publication uses the existing receipt reconciliation boundary.
+Attempt abort is a local stop interface for future ownership loss, not Worker fencing.
+
+## Public data boundary
+
+CH-06C adds [public projections and private execution data](data-boundaries.md).
+
+CH-07A moves evaluation source rules and runtime selection into [trusted project adapters](project-adapters.md).
+Each project binds literal source/read-only/test roots, a pinned image and Python path, while
+task metadata and hidden overlays remain in the trusted evaluator. Candidate changes are replayed
+into a fresh buggy export before acceptance; graph/model inputs retain only buggy context and
+visible tests. Schema-1 manifests and old run directories remain historical read-only evidence.
+API/events use reviewed fields and classified errors; provider exceptions are replaced before
+LangGraph stores error writes. Async graph/model scopes disable automatic external tracing.
+Known credentials cause code/context rejection rather than code rewriting. Complete Diff access
+requires an API Key; canonical artifacts and evidence keep their identities.

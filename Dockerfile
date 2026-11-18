@@ -21,7 +21,7 @@ COPY src ./src
 COPY examples ./examples
 COPY evals ./evals
 COPY delivery ./delivery
-COPY scripts/check_model_connections.py ./scripts/check_model_connections.py
+COPY scripts/tools/check_model_connections.py ./scripts/tools/check_model_connections.py
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-build-isolation --no-editable --extra oauth --group build
 
 RUN useradd --create-home --uid 10001 repopilot \
@@ -36,7 +36,7 @@ FROM runtime AS integration-test
 USER root
 COPY tests ./tests
 COPY scripts ./scripts
-COPY Dockerfile.sandbox ./
+COPY docker ./docker
 COPY docs/evidence ./docs/evidence
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-build-isolation --no-editable --extra dev --extra oauth --group build
 USER repopilot
